@@ -36,30 +36,24 @@
             FALLBACK_URL: "https://lin.ee/7fXzt2u"
         };
 
-        // 同分頁總跳轉次數硬上限：超過就強制停，只顯示按鈕（終極防迴圈保險）
-        const MAX_HOPS = 2;
-
-        // ---------- 工具函式 ----------
+        const MAX_HOPS = 3;
 
         function send(data) {
             try {
                 const formData = new URLSearchParams();
                 for (const key in data) { formData.append(key, data[key]); }
                 if (window.fetch) {
-                    fetch(CONFIG.N8N_URL, {
-                        method: 'POST', body: formData, mode: 'no-cors', keepalive: true
-                    }).catch(() => {
-                        if (navigator.sendBeacon) navigator.sendBeacon(CONFIG.N8N_URL, formData);
-                    });
+                    fetch(CONFIG.N8N_URL, { method: 'POST', body: formData, mode: 'no-cors', keepalive: true })
+                        .catch(() => { if (navigator.sendBeacon) navigator.sendBeacon(CONFIG.N8N_URL, formData); });
                 } else if (navigator.sendBeacon) {
                     navigator.sendBeacon(CONFIG.N8N_URL, formData);
                 }
             } catch (err) { console.error("Webhook 送出失敗", err); }
         }
 
-        function showManualButton(targetUrl, statusMsg) {
+        function stopAndShowButton(targetUrl, statusMsg) {
             document.getElementById('loader').style.display = 'none';
-            if (statusMsg) document.getElementById('status-text').innerText = statusMsg;
+            document.getElementById('status-text').innerText = statusMsg || "請點擊下方綠色按鈕加入 LINE：";
             const btn = document.getElementById('manual-line-btn');
             btn.href = targetUrl || CONFIG.FALLBACK_URL;
             btn.style.display = 'inline-block';
@@ -71,20 +65,13 @@
             return v;
         }
 
-        // 安全跳轉：每跳一次計數+1，超過上限就不跳、只顯示按鈕
         function safeRedirect(url, statusMsg) {
-            let hops = parseInt(sessionStorage.getItem('hop_count') || "0", 10);
-            hops += 1;
+            let hops = parseInt(sessionStorage.getItem('hop_count') || "0", 10) + 1;
             sessionStorage.setItem('hop_count', String(hops));
-            showManualButton(url, statusMsg);
-            if (hops > MAX_HOPS) {
-                document.getElementById('status-text').innerText = "請點擊下方綠色按鈕加入 LINE：";
-                return;
-            }
+            stopAndShowButton(url, statusMsg);
+            if (hops > MAX_HOPS) return;
             window.location.assign(url);
         }
-
-        // ---------- 主流程 ----------
 
         async function main() {
             try {
@@ -108,10 +95,6 @@
 
                 const addFriendUrl = `https://line.me/R/ti/p/${CONFIG.MOBILE_OA_ID}`;
 
-                // ============================================================
-                // 第二段：LINE / LIFF 環境 → 拿 userId / lineName，送完整一筆
-                // 條件：UA含line / 進過liff / 在line.me網域，任一成立
-                // ============================================================
                 if (isLineUA || enteredLiff || onLiffHost) {
                     sessionStorage.setItem('entered_liff', '1');
 
@@ -124,45 +107,39 @@
                         lineName:   ""
                     };
 
-                    const loginTry = parseInt(sessionStorage.getItem('login_try') || "0", 10);
-                    const MAX_LOGIN_TRY = 1;
-
+                    let liffReady = false;
+                    let loggedIn = false;
                     try {
                         await Promise.race([
                             (async () => {
                                 await liff.init({ liffId: CONFIG.LIFF_ID });
-
-                                if (!liff.isLoggedIn()) {
-                                    if (loginTry >= MAX_LOGIN_TRY) {
-                                        throw new Error('login_blocked');
-                                    }
-                                    sessionStorage.setItem('login_try', String(loginTry + 1));
-                                    liff.login({ redirectUri: window.location.href });
-                                    await new Promise(() => {});
-                                }
-
-                                const profile = await liff.getProfile();
-                                payload.lineUserId = profile.userId;
-                                payload.lineName   = profile.displayName;
-                                payload.source     = "Mobile_Success_UID";
-                                payload.user_ip    = sessionStorage.getItem('saved_ip') || "unknown";
+                                liffReady = true;
+                                loggedIn = liff.isLoggedIn();
                             })(),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('liff_timeout')), 8000))
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('liff_timeout')), 6000))
                         ]);
-                    } catch (e) {
-                        if (e.message === 'login_blocked')      payload.source = "Mobile_LIFF_LoginBlocked_Bypass";
-                        else if (e.message === 'liff_timeout')  payload.source = "Mobile_LIFF_Timeout_Bypass";
-                        else                                    payload.source = "Mobile_LIFF_Error_Bypass";
+                    } catch (e) {}
+
+                    if (liffReady && loggedIn) {
+                        try {
+                            const profile = await liff.getProfile();
+                            payload.lineUserId = profile.userId;
+                            payload.lineName   = profile.displayName;
+                            payload.source     = "Mobile_Success_UID";
+                            payload.user_ip    = sessionStorage.getItem('saved_ip') || "unknown";
+                        } catch (e) {
+                            payload.source = "Mobile_LIFF_Profile_Error";
+                        }
+                        send(payload);
+                        safeRedirect(addFriendUrl, "即將帶您加入好友，若未自動開啟請點下方按鈕：");
+                        return;
                     }
 
+                    payload.source = liffReady ? "Chrome_Incognito_NoName_Manual" : "Mobile_LIFF_Timeout_Manual";
                     send(payload);
-                    safeRedirect(addFriendUrl, "即將帶您加入好友，若未自動開啟請點下方按鈕：");
+                    stopAndShowButton(addFriendUrl, "請點擊下方綠色按鈕加入 LINE 👇");
                     return;
                 }
-
-                // ============================================================
-                // 第一段：純外部瀏覽器 → 導去 liff.line.me（手機）並寫旗標，不送 webhook
-                // ============================================================
 
                 sessionStorage.setItem('entered_liff', '1');
 
@@ -175,8 +152,8 @@
                 safeRedirect(targetUrl, "若未自動開啟，請點擊下方按鈕加入 LINE：");
 
             } catch (fatalError) {
-                console.error("發生嚴重錯誤，強制啟動備用跳轉", fatalError);
-                showManualButton(CONFIG.FALLBACK_URL, "開啟發生問題，請點下方按鈕：");
+                console.error("發生嚴重錯誤", fatalError);
+                stopAndShowButton(CONFIG.FALLBACK_URL, "開啟發生問題，請點下方按鈕：");
             }
         }
 
