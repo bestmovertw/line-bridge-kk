@@ -19,11 +19,11 @@
 <body>
     <div class="container">
         <div id="loader" class="loader"></div>
-        <p id="status-text">正在為您開啟 LINE，請稍候...</p>
+        <p id="status-text">請稍候，正在加入官方line...</p>
 
         <div class="btn-group">
             <a id="manual-line-btn" href="#" class="line-btn">👉 點此開啟 LINE 加入好友</a>
-            <a href="tel:+886918052152" class="call-btn">☎️ 若無法加入，請點此打給專人</a>
+            <a href="tel:+886918052152" class="call-btn">☎️ 若無法加入，請點此打給阿德</a>
         </div>
     </div>
 
@@ -51,6 +51,7 @@
             } catch (err) { console.error("Webhook 送出失敗", err); }
         }
 
+        // 停頁顯示按鈕（不自動跳轉），讓使用者手動點
         function stopAndShowButton(targetUrl, statusMsg) {
             document.getElementById('loader').style.display = 'none';
             document.getElementById('status-text').innerText = statusMsg || "請點擊下方綠色按鈕加入 LINE：";
@@ -65,6 +66,7 @@
             return v;
         }
 
+        // 自動跳轉（仍備好按鈕），帶硬上限
         function safeRedirect(url, statusMsg) {
             let hops = parseInt(sessionStorage.getItem('hop_count') || "0", 10) + 1;
             sessionStorage.setItem('hop_count', String(hops));
@@ -86,7 +88,9 @@
                     params.get('in_liff') === '1' ||
                     sessionStorage.getItem('entered_liff') === '1';
 
-                const gclid = getParam(params, 'gclid', 'saved_gclid');
+                const gclid  = getParam(params, 'gclid',  'saved_gclid');
+                const gbraid = getParam(params, 'gbraid', 'saved_gbraid');
+                const wbraid = getParam(params, 'wbraid', 'saved_wbraid');
 
                 fetch('https://api.ipify.org?format=json')
                     .then(r => r.json())
@@ -95,11 +99,14 @@
 
                 const addFriendUrl = `https://line.me/R/ti/p/${CONFIG.MOBILE_OA_ID}`;
 
+                // ============================================================
+                // 第二段：LINE / LIFF 環境
+                // ============================================================
                 if (isLineUA || enteredLiff || onLiffHost) {
                     sessionStorage.setItem('entered_liff', '1');
 
                     let payload = {
-                        gclid,
+                        gclid, gbraid, wbraid,
                         user_ip:    sessionStorage.getItem('saved_ip') || "unknown",
                         source:     "Inside_Line",
                         timestamp:  new Date().toISOString(),
@@ -118,8 +125,11 @@
                             })(),
                             new Promise((_, reject) => setTimeout(() => reject(new Error('liff_timeout')), 6000))
                         ]);
-                    } catch (e) {}
+                    } catch (e) {
+                        // init 逾時或失敗
+                    }
 
+                    // ★ 已登入（一般瀏覽器）→ 拿名字、自動跳加好友 ★
                     if (liffReady && loggedIn) {
                         try {
                             const profile = await liff.getProfile();
@@ -135,19 +145,27 @@
                         return;
                     }
 
+                    // ★ 未登入（含 Chrome 無痕）→ 不跳登入、不自動跳轉，停頁顯示按鈕 ★
                     payload.source = liffReady ? "Chrome_Incognito_NoName_Manual" : "Mobile_LIFF_Timeout_Manual";
                     send(payload);
                     stopAndShowButton(addFriendUrl, "請點擊下方綠色按鈕加入 LINE 👇");
                     return;
                 }
 
+                // ============================================================
+                // 第一段：純外部瀏覽器 → 導去 liff.line.me（不送 webhook）
+                // ============================================================
                 sessionStorage.setItem('entered_liff', '1');
 
-                const qs = `in_liff=1&gclid=${encodeURIComponent(gclid)}`;
+                const qs =
+                    `in_liff=1` +
+                    `&gclid=${encodeURIComponent(gclid)}` +
+                    `&gbraid=${encodeURIComponent(gbraid)}` +
+                    `&wbraid=${encodeURIComponent(wbraid)}`;
 
                 const targetUrl = isMobile
                     ? `https://liff.line.me/${CONFIG.LIFF_ID}?${qs}`
-                    : `https://line.me/R/ti/p/${CONFIG.PC_OA_ID}?gclid=${encodeURIComponent(gclid)}`;
+                    : `https://line.me/R/ti/p/${CONFIG.PC_OA_ID}?gclid=${encodeURIComponent(gclid)}&gbraid=${encodeURIComponent(gbraid)}&wbraid=${encodeURIComponent(wbraid)}`;
 
                 safeRedirect(targetUrl, "若未自動開啟，請點擊下方按鈕加入 LINE：");
 
